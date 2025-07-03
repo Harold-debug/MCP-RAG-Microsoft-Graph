@@ -1,0 +1,13 @@
+{
+    "mcpServers": {
+      "Lokka-Microsoft": {
+        "command": "node",
+        "args": ["C:/Users/Hgeumtcheng/Documents/lokka/src/mcp/build/main.js"],
+        "env": {
+          "TENANT_ID": "your-tenant-id",
+          "CLIENT_ID": "your-client-id",
+          "CLIENT_SECRET": "your-client-secret"
+        }
+      }
+    }
+  }
