@@ -1,10 +1,35 @@
 import streamlit as st
 import asyncio
 import os
+import logging
 from dotenv import load_dotenv
 from langchain_aws import ChatBedrock
-from mcp_use import MCPAgent, MCPClient
 import time
+import msal
+import json
+from datetime import datetime, timedelta
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+from langchain_mcp_adapters.tools import load_mcp_tools
+from langchain.agents import AgentExecutor
+from langchain.agents.format_scratchpad import format_to_openai_function_messages
+from langchain.agents.output_parsers import OpenAIFunctionsAgentOutputParser
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Load environment variables first
+load_dotenv()
+
+# Check required environment variables
+required_vars = ["AZURE_CLIENT_ID", "AZURE_TENANT_ID"]
+missing_vars = [var for var in required_vars if not os.getenv(var)]
+if missing_vars:
+    st.error(f"❌ Missing required environment variables: {', '.join(missing_vars)}")
+    st.error("Please create a .env file with the required variables.")
+    st.stop()
 
 # Page configuration
 st.set_page_config(
@@ -13,69 +38,163 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS for better styling
-st.markdown("""
-<style>
-    .stTextInput > div > div > input {
-        background-color: #f0f2f6;
-    }
-    .chat-message {
-        padding: 1rem;
-        border-radius: 0.5rem;
-        margin-bottom: 1rem;
-        display: flex;
-        flex-direction: column;
-    }
-    .chat-message.user {
-        background-color: #e3f2fd;
-        border-left: 4px solid #2196f3;
-    }
-    .chat-message.assistant {
-        background-color: #f3e5f5;
-        border-left: 4px solid #9c27b0;
-    }
-    .chat-message .message-content {
-        margin-bottom: 0.5rem;
-    }
-    .chat-message .timestamp {
-        font-size: 0.8rem;
-        color: #666;
-        text-align: right;
-    }
-</style>
-""", unsafe_allow_html=True)
+# MSAL Configuration
+MSAL_CONFIG = {
+    "client_id": os.getenv("AZURE_CLIENT_ID"),
+    "authority": f"https://login.microsoftonline.com/{os.getenv('AZURE_TENANT_ID')}",
+    "scope": ["https://graph.microsoft.com/.default"],
+    "redirect_uri": os.getenv("AZURE_REDIRECT_URI", "http://localhost:8501")
+}
+
+class TokenManager:
+    def __init__(self):
+        try:
+            self.app = msal.PublicClientApplication(
+                MSAL_CONFIG["client_id"],
+                authority=MSAL_CONFIG["authority"]
+            )
+        except ValueError as e:
+            st.error(f"❌ Failed to initialize MSAL: {str(e)}")
+            st.error("Please check your Azure AD configuration.")
+            raise
+        
+    def get_token(self):
+        try:
+            accounts = self.app.get_accounts()
+            if accounts:
+                result = self.app.acquire_token_silent(MSAL_CONFIG["scope"], account=accounts[0])
+                if result:
+                    return result['access_token']
+            
+            result = self.app.acquire_token_interactive(MSAL_CONFIG["scope"])
+            if "access_token" in result:
+                return result['access_token']
+            return None
+        except Exception as e:
+            st.error(f"❌ Failed to acquire token: {str(e)}")
+            return None
+
+    def clear_token_cache(self):
+        accounts = self.app.get_accounts()
+        for account in accounts:
+            self.app.remove_account(account)
 
 # Initialize session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "client" not in st.session_state:
-    st.session_state.client = None
 if "agent" not in st.session_state:
     st.session_state.agent = None
 if "initialized" not in st.session_state:
     st.session_state.initialized = False
+if "token_manager" not in st.session_state:
+    st.session_state.token_manager = TokenManager()
+if "last_token_refresh" not in st.session_state:
+    st.session_state.last_token_refresh = None
+if "mcp_read" not in st.session_state:
+    st.session_state.mcp_read = None
+if "mcp_write" not in st.session_state:
+    st.session_state.mcp_write = None
 
-# MCP initialization
+def create_server_params(access_token):
+    return StdioServerParameters(
+        command="npx",
+        args=["-y", "@merill/lokka"],
+        env={
+            "USE_ACCESS_TOKEN": "true",
+            "MS_GRAPH_ACCESS_TOKEN": access_token,
+            "AZURE_CLIENT_ID": os.getenv("AZURE_CLIENT_ID"),
+            "AZURE_TENANT_ID": os.getenv("AZURE_TENANT_ID"),
+            "AZURE_REDIRECT_URI": os.getenv("AZURE_REDIRECT_URI", "http://localhost:8501")
+        }
+    )
 
-def initialize_mcp():
+async def initialize_mcp():
     try:
-        load_dotenv()
-        config_file = "mcp_with_interactive_auth.json"
-        client = MCPClient.from_config_file(config_file)
-        st.info("🔧 Initializing MCP connection... Please complete authentication in the browser.")
-        asyncio.run(client.create_all_sessions(auto_initialize=True))
-        st.success("✅ MCP Connected!")
-        llm = ChatBedrock(
-            model="anthropic.claude-3-5-sonnet-20240620-v1:0",
-            region_name="us-east-1",
-            streaming=True
-        )
-        agent = MCPAgent(llm=llm, client=client, max_steps=10, memory_enabled=True, auto_initialize=True)
-        return client, agent
+        # Get access token
+        access_token = st.session_state.token_manager.get_token()
+        if not access_token:
+            error_msg = "Failed to obtain access token"
+            logger.error(error_msg)
+            st.error(error_msg)
+            return None, None
+            
+        # Create MCP server parameters
+        server_params = create_server_params(access_token)
+        logger.info("Creating MCP connection with params: %s", server_params)
+        
+        st.info("🔧 Initializing MCP connection...")
+        
+        # Initialize MCP client
+        async with stdio_client(server_params) as (read, write):
+            st.session_state.mcp_read = read
+            st.session_state.mcp_write = write
+            
+            # Initialize LangChain components
+            llm = ChatBedrock(
+                model="anthropic.claude-3-5-sonnet-20240620-v1:0",
+                region_name="us-east-1",
+                streaming=True
+            )
+            
+            # Create agent prompt
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", "You are a helpful AI assistant that helps users interact with their SharePoint files and Microsoft Graph data. Use the available tools to help answer questions."),
+                MessagesPlaceholder(variable_name="chat_history"),
+                ("human", "{input}"),
+                MessagesPlaceholder(variable_name="agent_scratchpad")
+            ])
+            
+            # Load tools and create agent
+            async with ClientSession(st.session_state.mcp_read, st.session_state.mcp_write) as session:
+                # Initialize the session
+                await session.initialize()
+                
+                logger.info("Loading MCP tools...")
+                tools = await load_mcp_tools(session)
+                logger.info("Successfully loaded %d tools", len(tools))
+                
+                # Create agent with proper async configuration
+                agent = AgentExecutor(
+                    agent=(
+                        prompt
+                        | llm.bind_tools(tools)
+                        | format_to_openai_function_messages
+                        | OpenAIFunctionsAgentOutputParser()
+                    ),
+                    tools=tools,
+                    verbose=True,
+                    handle_parsing_errors=True  # Add error handling for parsing
+                )
+                
+                st.success("✅ MCP Connected!")
+                
+                # Store token refresh time
+                st.session_state.last_token_refresh = datetime.now()
+                
+                return tools, agent
+            
     except Exception as e:
-        st.error(f"❌ Error initializing MCP: {e}")
-        st.error("💡 Make sure your Azure app registration has the correct redirect URI configured and no client secret is set for interactive auth.")
+        error_msg = f"❌ Error initializing MCP: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        st.error(error_msg)
         return None, None
+
+# Token refresh check
+def check_token_refresh():
+    if st.session_state.last_token_refresh:
+        time_since_refresh = datetime.now() - st.session_state.last_token_refresh
+        if time_since_refresh > timedelta(minutes=55):
+            st.info("🔄 Refreshing access token...")
+            asyncio.run(refresh_mcp())
+
+async def refresh_mcp():
+    tools, agent = await initialize_mcp()
+    if tools and agent:
+        st.session_state.agent = agent
+        st.success("✅ Token refreshed!")
+    else:
+        st.error("❌ Failed to refresh token")
+        st.session_state.initialized = False
 
 # Streaming (realtime)
 def stream_mcp_response(response_data, message_placeholder):
@@ -116,54 +235,82 @@ with st.sidebar:
         st.warning("⚠️ MCP Not Connected")
         if st.button("🔄 Initialize MCP Connection"):
             with st.spinner("Initializing MCP connection..."):
-                st.info("🔐 Interactive Authentication Required. A browser window will open for authentication. Please complete the login process.")
-                client, agent = initialize_mcp()
-                if client and agent:
-                    st.session_state.client = client
+                st.info("🔐 Interactive Authentication Required")
+                tools, agent = asyncio.run(initialize_mcp())
+                if tools and agent:
                     st.session_state.agent = agent
                     st.session_state.initialized = True
                     st.success("✅ MCP connection initialized!")
                 else:
                     st.error("❌ Failed to initialize MCP connection")
-                    st.error("💡 Check that your Azure app registration is configured correctly")
     else:
         st.success("✅ MCP Connected")
         if st.button("🔍 Check Auth Status"):
-            if st.session_state.client and st.session_state.client.sessions:
-                session = list(st.session_state.client.sessions.values())[0]
+            if st.session_state.mcp_read and st.session_state.mcp_write:
                 async def check_status():
-                    try:
+                    async with ClientSession(st.session_state.mcp_read, st.session_state.mcp_write) as session:
                         status = await session.call_tool("get-auth-status", {})
                         st.json(status)
-                    except Exception as e:
-                        st.error(f"Auth check failed: {e}")
                 asyncio.run(check_status())
             else:
-                st.warning("No active session to check status.")
+                st.warning("No active MCP session.")
         if st.button("🗑️ Clear Chat History"):
             st.session_state.messages = []
-            if st.session_state.agent:
-                st.session_state.agent.clear_conversation_history()
             st.success("Chat history cleared!")
 
 # Main chat interface
-if not st.session_state.initialized:
-    st.info("👆 Please initialize the MCP connection using the button in the sidebar to start chatting.")
-else:
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-    if prompt := st.chat_input("Ask about your SharePoint files..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        with st.chat_message("assistant"):
-            message_placeholder = st.empty()
-            with st.spinner("🤔 Thinking..."):
-                response = asyncio.run(st.session_state.agent.run(prompt))
-            with st.spinner("📡 Streaming response..."):
-                final_response = stream_mcp_response(response, message_placeholder)
-        st.session_state.messages.append({"role": "assistant", "content": final_response})
+async def handle_chat():
+    if not st.session_state.initialized:
+        st.info("👆 Please initialize the MCP connection using the button in the sidebar to start chatting.")
+    else:
+        # Check if token needs refresh
+        check_token_refresh()
+        
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+        
+        if prompt := st.chat_input("Ask about your SharePoint files..."):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+            with st.chat_message("assistant"):
+                message_placeholder = st.empty()
+                with st.spinner("🤔 Thinking..."):
+                    try:
+                        # Create a new session for this interaction
+                        async with ClientSession(st.session_state.mcp_read, st.session_state.mcp_write) as session:
+                            # Initialize the session
+                            await session.initialize()
+                            
+                            # Get the response from the agent
+                            try:
+                                response = await st.session_state.agent.ainvoke(
+                                    {
+                                        "input": prompt,
+                                        "chat_history": st.session_state.messages[:-1]  # Exclude current message
+                                    }
+                                )
+                                
+                                with st.spinner("📡 Streaming response..."):
+                                    final_response = stream_mcp_response(response["output"], message_placeholder)
+                                st.session_state.messages.append({"role": "assistant", "content": final_response})
+                                
+                            except Exception as e:
+                                logger.error("Agent execution error: %s", str(e), exc_info=True)
+                                error_msg = f"❌ Error executing agent: {str(e)}"
+                                message_placeholder.error(error_msg)
+                                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                                
+                    except Exception as e:
+                        logger.error("Session error: %s", str(e), exc_info=True)
+                        error_msg = f"❌ Error processing request: {str(e)}"
+                        message_placeholder.error(error_msg)
+                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
+
+# Run the async chat interface
+if __name__ == "__main__":
+    asyncio.run(handle_chat())
 
 # Footer
 st.markdown("---")
@@ -174,11 +321,13 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Cleanup on app close
-def cleanup():
-    if st.session_state.client:
+async def cleanup():
+    if st.session_state.mcp_read and st.session_state.mcp_write:
         try:
-            asyncio.run(st.session_state.client.close_all_sessions())
+            async with ClientSession(st.session_state.mcp_read, st.session_state.mcp_write) as session:
+                await session.close()
         except:
             pass
+
 import atexit
-atexit.register(cleanup) 
+atexit.register(lambda: asyncio.run(cleanup())) 
