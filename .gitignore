@@ -144,7 +144,7 @@ venv.bak/
 dmypy.json
 
 # Ignore all JSON files
-*.json
+# *.json
 
 # Pyre type checker
 .pyre/
