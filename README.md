@@ -34,12 +34,13 @@ A Streamlit-based chat interface that uses MCP (Model Context Protocol) to inter
  
 3. **Configure Azure AD credentials**:
 
-   **Option A: Interactive Authentication (For production)**
+   **Option A: Access Token Authentication (Recommended for production)**
    - Create an Azure AD app registration
    - Grant Microsoft Graph permissions (Sites.Read.All, Files.Read.All, User.Read, Mail.Read, etc.)
    - **Do NOT generate a client secret** - interactive auth doesn't need one
-   - Configure redirect URI: `http://localhost:3000` Platform: Mobile & Desktop App
-   - Update `mcp_with_interactive_auth.json` with your credentials:
+   - Configure redirect URI: `http://localhost:8501` Platform: Mobile & Desktop App
+   - The application will handle token acquisition and refresh automatically using MSAL
+   - Use `mcp_with_access_token.json` configuration:
    ```json
    {
      "mcpServers": {
@@ -47,10 +48,7 @@ A Streamlit-based chat interface that uses MCP (Model Context Protocol) to inter
          "command": "npx",
          "args": ["-y", "@merill/lokka"],
          "env": {
-           "TENANT_ID": "your-tenant-id",
-           "CLIENT_ID": "your-client-id",
-           "USE_INTERACTIVE": "true",
-           "REDIRECT_URI": "http://localhost:3000"
+           "USE_ACCESS_TOKEN": "true"
          }
        }
      }
@@ -85,10 +83,21 @@ A Streamlit-based chat interface that uses MCP (Model Context Protocol) to inter
    export AWS_DEFAULT_REGION=us-east-1
    ```
  
+## Authentication Flow
+
+The application uses a hybrid authentication approach:
+
+1. **MSAL Authentication**: The Streamlit app handles user authentication using MSAL (Microsoft Authentication Library)
+2. **Token Management**: Access tokens are automatically acquired and refreshed by the TokenManager
+3. **Lokka Integration**: Tokens are passed to Lokka using the `set-access-token` tool, eliminating the need for interactive authentication
+4. **Automatic Refresh**: Tokens are refreshed every 55 minutes to ensure continuous operation
+
+This approach eliminates the double authentication problem and provides a seamless user experience.
+
 ## Usage
- 
+
 ### Command Line Interface
- 
+
 Run the command-line version:
 ```bash
 poetry run python app.py
