@@ -35,10 +35,7 @@ class MCPClientManager:
             args=["-y", "@merill/lokka"],
             env={
                 "USE_ACCESS_TOKEN": "true",
-                "MS_GRAPH_ACCESS_TOKEN": access_token,
-                "AZURE_CLIENT_ID": get_config_value("AZURE_CLIENT_ID"),
-                "AZURE_TENANT_ID": get_config_value("AZURE_TENANT_ID"),
-                "AZURE_REDIRECT_URI": get_config_value("AZURE_REDIRECT_URI", "http://localhost:8501")
+                "MS_GRAPH_ACCESS_TOKEN": access_token
             }
         )
         return self.server_params
@@ -65,6 +62,14 @@ class MCPClientManager:
                 async with ClientSession(read, write) as session:
                     # Initialize the session
                     await session.initialize()
+                    
+                    # Set the access token using Lokka's set-access-token tool
+                    logger.info("Setting access token in Lokka...")
+                    try:
+                        await session.call_tool("set-access-token", {"token": access_token})
+                        logger.info("Successfully set access token in Lokka")
+                    except Exception as e:
+                        logger.warning(f"Could not set access token via tool (this is normal for some versions): {e}")
                     
                     # Create agent prompt
                     prompt = ChatPromptTemplate.from_messages([
@@ -125,4 +130,30 @@ class MCPClientManager:
     async def cleanup(self):
         """Clean up MCP resources."""
         # Nothing to clean up since we create fresh connections for each operation
-        pass 
+        pass
+        
+    async def refresh_token(self, new_access_token: str) -> bool:
+        """
+        Refresh the access token in the current MCP session.
+        
+        Args:
+            new_access_token: The new access token
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            if not self.server_params:
+                logger.warning("No server params available for token refresh")
+                return False
+                
+            async with stdio_client(self.server_params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    await session.call_tool("set-access-token", {"token": new_access_token})
+                    logger.info("Successfully refreshed access token in Lokka")
+                    return True
+                    
+        except Exception as e:
+            logger.error(f"Failed to refresh token: {e}")
+            return False 

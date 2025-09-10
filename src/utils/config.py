@@ -32,7 +32,12 @@ def load_msal_config() -> Dict[str, Any]:
     return {
         "client_id": get_config_value("AZURE_CLIENT_ID"),
         "authority": f"https://login.microsoftonline.com/{get_config_value('AZURE_TENANT_ID')}",
-        "scope": ["https://graph.microsoft.com/.default"],
+        "scope": [
+            "https://graph.microsoft.com/User.Read",
+            "https://graph.microsoft.com/Sites.Read.All",
+            "https://graph.microsoft.com/Files.Read.All",
+            "https://graph.microsoft.com/Mail.Read"
+        ],
         "redirect_uri": get_config_value("AZURE_REDIRECT_URI", "http://localhost:8501")
     }
 

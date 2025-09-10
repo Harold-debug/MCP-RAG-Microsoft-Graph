@@ -1,0 +1,11 @@
+{
+    "mcpServers": {
+      "Lokka-Microsoft": {
+        "command": "npx",
+         "args": ["-y", "@merill/lokka"],
+        "env": {
+          "USE_ACCESS_TOKEN": "true"
+        }
+      }
+    }
+  }

@@ -3,10 +3,10 @@ import logging
 from datetime import datetime, timedelta
 import streamlit as st
 
-from src.auth.token_manager import TokenManager
+from src.auth.azure_cli_token_manager import AzureCLITokenManager
 from src.mcp.client import MCPClientManager
 from src.ui.chat import ChatInterface
-from src.utils.config import load_msal_config, check_required_vars, init_session_state
+from src.utils.config import check_required_vars, init_session_state
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 # Page configuration
 st.set_page_config(
-    page_title="SharePoint RAG Chat",
+    page_title="SharePoint RAG Chat (Azure CLI)",
     page_icon="💬",
     layout="wide"
 )
@@ -31,20 +31,11 @@ async def refresh_mcp() -> None:
     """Refresh the MCP connection with a new token."""
     token = st.session_state.token_manager.get_token()
     if token:
-        # Try to refresh the token in the existing MCP session first
-        if st.session_state.initialized:
-            success = await st.session_state.mcp_client.refresh_token(token)
-            if success:
-                st.session_state.last_token_refresh = datetime.now()
-                st.success("✅ Token refreshed!")
-                return
-        
-        # If refresh failed or no existing session, reinitialize
         tools, agent = await st.session_state.mcp_client.initialize(token)
         if tools and agent:
             st.session_state.agent = agent
             st.session_state.last_token_refresh = datetime.now()
-            st.success("✅ MCP reinitialized with new token!")
+            st.success("✅ Token refreshed!")
         else:
             st.error("❌ Failed to refresh token")
             st.session_state.initialized = False
@@ -97,20 +88,14 @@ def main():
     # Initialize session state
     init_session_state()
     
-    # Check required variables
-    missing_vars = check_required_vars()
-    if missing_vars:
-        st.error(f"❌ Missing required variables: {', '.join(missing_vars)}")
-        st.error("Please set up your .streamlit/secrets.toml file with the required variables.")
-        st.stop()
-    
     # Header
-    st.title("💬 SharePoint RAG Chat")
+    st.title("💬 SharePoint RAG Chat (Azure CLI)")
     st.markdown("Chat with your SharePoint files using AI-powered search and retrieval.")
+    st.info("🔧 This version uses Azure CLI authentication to bypass Azure AD configuration issues.")
     
     # Initialize components if not already done
     if "token_manager" not in st.session_state:
-        st.session_state.token_manager = TokenManager(load_msal_config())
+        st.session_state.token_manager = AzureCLITokenManager()
     if "mcp_client" not in st.session_state:
         st.session_state.mcp_client = MCPClientManager()
     
@@ -121,7 +106,13 @@ def main():
             st.warning("⚠️ MCP Not Connected")
             if st.button("🔄 Initialize MCP Connection"):
                 with st.spinner("Initializing MCP connection..."):
-                    st.info("🔐 Interactive Authentication Required")
+                    st.info("🔐 Azure CLI Authentication Required")
+                    
+                    # Check if user is logged in to Azure CLI
+                    account_info = st.session_state.token_manager.get_account_info()
+                    if account_info:
+                        st.success(f"✅ Logged in as: {account_info.get('user', {}).get('name', 'Unknown')}")
+                    
                     token = st.session_state.token_manager.get_token()
                     
                     if token:
@@ -134,17 +125,10 @@ def main():
                             st.error("❌ Failed to initialize MCP connection")
                     else:
                         st.error("❌ Failed to obtain access token")
+                        st.info("💡 Try running 'az login' in your terminal first")
         else:
             st.success("✅ MCP Connected")
             if st.button("🔍 Check Auth Status"):
-                # Show current account info
-                account_info = st.session_state.token_manager.get_account_info()
-                if account_info:
-                    st.info(f"**Current Account:** {account_info.get('username', 'Unknown')}")
-                else:
-                    st.warning("No account information available")
-                
-                # Check MCP status
                 async def check_status(session):
                     return await session.call_tool("get-auth-status", {})
                 
