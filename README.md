@@ -1,184 +1,264 @@
-# MCP-RAG-Microsoft-Graph
 
- 
-A Streamlit-based chat interface that uses MCP (Model Context Protocol) to interact with Microsoft 365 services and other Microsoft services using AI-powered search and retrieval.
- 
-## Features
- 
-- 💬 **Interactive Chat Interface**: Beautiful Streamlit-based chat UI
-- 🔍 **AI-Powered Search**: Uses Claude 3.5 Sonnet to understand and answer questions about Microsoft 365 files and services
-- 🔗 **MCP Integration**: Leverages Model Context Protocol for seamless tool integration
-- 🧠 **Conversation Memory**: Maintains context across chat sessions
-- 🎨 **Modern UI**: Clean, responsive design with real-time chat experience
- 
-## Prerequisites
- 
-- Python 3.12+
-- Poetry (for dependency management)
-- Azure AD App Registration with Microsoft Graph permissions
-- AWS Bedrock access for Claude 3.5 Sonnet
-- Node.js (for Lokka MCP server)
- 
-## Setup
- 
-1. **Clone the repository**:
-   ```bash
-   git clone <repository-url>
-   cd sharepoint-rag-demo
-   ```
- 
-2. **Install dependencies**:
-   ```bash
-   poetry install
-   ```
- 
-3. **Configure Azure AD credentials**:
+A powerful AI-powered chat application that enables natural language interaction with SharePoint data through Microsoft Graph API.
 
-   **Option A: Access Token Authentication (Recommended for production)**
-   - Create an Azure AD app registration
-   - Grant Microsoft Graph permissions (Sites.Read.All, Files.Read.All, User.Read, Mail.Read, etc.)
-   - **Do NOT generate a client secret** - interactive auth doesn't need one
-   - Configure redirect URI: `http://localhost:8501` Platform: Mobile & Desktop App
-   - The application will handle token acquisition and refresh automatically using MSAL
-   - Use `mcp_with_access_token.json` configuration:
-   ```json
-   {
-     "mcpServers": {
-       "Lokka-Microsoft": {
-         "command": "npx",
-         "args": ["-y", "@merill/lokka"],
-         "env": {
-           "USE_ACCESS_TOKEN": "true"
-         }
-       }
-     }
-   }
-   ```
+## 🚀 Features
 
-   **Option B: Hardcoded Authentication (Recommended for development)**
-   - Create an Azure AD app registration
-   - Grant Microsoft Graph permissions (Sites.Read.All, Files.Read.All, User.Read, Mail.Read, etc.)
-   - Generate a client secret
-   - Update `mcp_with_hardcoded_auth.json` with your credentials:
-   ```json
-   {
-     "mcpServers": {
-       "Lokka-Microsoft": {
-         "command": "npx",
-         "args": ["-y", "@merill/lokka"],
-         "env": {
-           "TENANT_ID": "your-tenant-id",
-           "CLIENT_ID": "your-client-id",
-           "CLIENT_SECRET": "your-client-secret-value"
-         }
-       }
-     }
-   }
-   ```
- 
-4. **Set up AWS credentials** (for Bedrock):
-   ```bash
-   export AWS_ACCESS_KEY_ID=your-access-key
-   export AWS_SECRET_ACCESS_KEY=your-secret-key
-   export AWS_DEFAULT_REGION=us-east-1
-   ```
- 
-## Authentication Flow
+- **Natural Language Queries**: Ask questions about your SharePoint sites, files, and content
+- **Interactive Authentication**: MSAL-based device code authentication with automatic token refresh
+- **Real-time Debugging**: Transparent tool execution with step-by-step visibility
+- **Intelligent Error Handling**: Graceful error analysis with helpful explanations and alternatives
 
-The application uses a hybrid authentication approach:
+## 🏗️ Architecture
 
-1. **MSAL Authentication**: The Streamlit app handles user authentication using MSAL (Microsoft Authentication Library)
-2. **Token Management**: Access tokens are automatically acquired and refreshed by the TokenManager
-3. **Lokka Integration**: Tokens are passed to Lokka using the `set-access-token` tool, eliminating the need for interactive authentication
-4. **Automatic Refresh**: Tokens are refreshed every 55 minutes to ensure continuous operation
+### Backbone Stack
 
-This approach eliminates the double authentication problem and provides a seamless user experience.
+- **AI Framework**: LangChain + LangGraph (Agent Orchestration)
+- **Tool Protocol**: MCP (Model Context Protocol)
+- **SharePoint Integration**: Lokka (MCP Server for Microsoft Graph)
+- **Authentication**: MSAL (Microsoft Authentication Library)
 
-## Usage
+### System Architecture
 
-### Command Line Interface
-
-Run the command-line version:
-```bash
-poetry run python app.py
 ```
- 
-### Web Interface
- 
-Run the Streamlit web app:
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Streamlit UI  │────│  LangChain Agent │────│   AWS Bedrock   │
+│   (Chat Interface)│    │  (Tool Orchestrator)│    │  (Claude 3.5)   │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+         │                       │                       │
+         │                       │                       │
+         ▼                       ▼                       ▼
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│  MCP Client     │────│   Lokka Server   │────│ Microsoft Graph │
+│  (Tool Manager) │    │  (Graph Wrapper) │    │      API        │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+```
+
+## 🔐 Authentication & Authorization
+
+### MSAL Interactive Authentication
+
+The application uses Microsoft Authentication Library (MSAL) with device code flow for secure, user-consented access to SharePoint data.
+
+#### Configuration
+```bash
+# Azure App Registration
+AZURE_CLIENT_ID=your-azure-app-id
+AZURE_TENANT_ID=your-tenant-id
+```
+
+#### Authentication Process
+1. **User Initiation**: User starts a chat session
+2. **Device Code**: Application displays device code and URL
+3. **User Authentication**: User authenticates with corporate credentials
+4. **Token Acquisition**: Application receives access token for SharePoint
+5. **Automatic Refresh**: Tokens refresh automatically before expiry
+
+### SharePoint Permission Scopes
+
+The application requests specific Microsoft Graph permissions for SharePoint access:
+
+```python
+scopes = [
+    "User.Read",           # User profile access
+    "Sites.Search.All",      # SharePoint site access
+    "Projects.Read",           # Email access
+    "MyFiles.Read",
+]
+```
+
+### Security Features
+
+- **User-Consented Access**: Each user authenticates with their own credentials
+- **Permission Respect**: Only accesses SharePoint data user has rights to view
+- **Proactive Token Refresh**: Automatic renewal 5 minutes before expiry
+- **Read-Only Access**: No write, modify, or delete operations
+- **Tenant Isolation**: Access limited to authenticated user's SharePoint data
+- **Audit Logging**: All authentication events tracked
+
+## 🛠️ Installation
+
+### Prerequisites
+
+- Python 3.12+
+- Microsoft 365 tenant with SharePoint Online licenses
+- AWS account with Bedrock access
+- Azure App Registration with SharePoint permissions
+
+### Setup
+
+1. **Clone the repository**
+```bash
+git clone <repository-url>
+cd MCP-RAG-Microsoft-Graph
+```
+
+2. **Install dependencies**
+```bash
+poetry install
+
+```
+
+3. **Configure environment variables**
+```bash
+cp env.example .env
+# Edit .env with your configuration
+```
+
+4. **Set up Azure App Registration**
+   - Go to Azure Portal > App registrations
+   - Create new registration
+   - Enable "Allow public client flows"
+   - Add redirect URI: `http://localhost`
+   - Add Microsoft Graph API permissions for SharePoint:
+     - `User.Read`
+
+   - Grant admin consent for SharePoint permissions
+      - `Sites.Search.All`
+     - `Projects.Read`
+     - `MyFiles.Read`
+
+5. **Configure AWS Bedrock**
+   - Ensure Claude 3.5 Sonnet model access
+   - Set up AWS credentials
+
+### Environment Configuration
+
+Create a `.env` file or use Streamlit secrets:
+
+```toml
+# .env file
+AZURE_CLIENT_ID=your_azure_app_id
+AZURE_TENANT_ID=your_tenant_id
+
+# Or .streamlit/secrets.toml
+[secrets]
+AZURE_CLIENT_ID = "your_azure_app_id"
+AZURE_TENANT_ID = "your_tenant_id"
+```
+
+## 🚀 Usage
+
+### Starting the Application
+
 ```bash
 poetry run streamlit run streamlit_app.py
 ```
- 
-Then open your browser to `http://localhost:8501`
- 
-## How to Use
- 
-### Web Interface (Streamlit)
+
+### Using the Chat Interface
+
 1. **Initialize Connection**: Click "Initialize MCP Connection" in the sidebar
-   - For interactive auth: A browser window will open for authentication
-   - Complete the Microsoft login process
-   - The `mcp_use.MCPClient` automatically creates sessions and initializes tools
-2. **Start Chatting**: Type questions about your Microsoft 365 files and services
-   - The `mcp_use.MCPAgent` processes your queries and orchestrates MCP tools
-   - Built-in conversation memory maintains context across interactions
-3. **Examples**:
-   - "What files do I have in my OneDrive/SharePoint?"
-   - "Find documents about project planning"
-   - "Show me recent presentations"
-   - "What's in the shared documents folder?"
-   - "Show me my recent emails"
-   - "Find calendar events for this week"
-   - "What Teams channels do I have access to?"
+2. **Authenticate**: Complete device code authentication with your corporate credentials
+3. **Start Chatting**: Ask questions about your SharePoint data
 
-### Command Line Interface
-The CLI version uses hardcoded authentication and provides a simple text-based interface for testing and development. It uses the same `mcp_use` library for MCP integration.
- 
-## Architecture
- 
-- **Frontend**: Streamlit for the web interface
-- **Backend**: MCP (Model Context Protocol) for tool integration via `mcp_use` library
-- **LLM**: Claude 3.5 Sonnet via AWS Bedrock
-- **Microsoft 365 Integration**: Lokka MCP server for Microsoft Graph API access to SharePoint, OneDrive, Outlook, Teams, and other Microsoft services
-- **Conversational Agent**: `mcp_use.MCPAgent` handles natural language processing and tool orchestration
-- **MCP Client**: `mcp_use.MCPClient` manages MCP server connections and sessions
- 
-## Troubleshooting
- 
+### Example Queries
+
+- "Show me my SharePoint sites"
+- "What files do I have in my SharePoint document library?"
+- "Search for documents about project planning"
+- "List all SharePoint lists I have access to"
+
+## 🔧 Configuration
+
+### Agent Configuration
+
+The application uses a sophisticated agent system with:
+
+- **Tool-Calling Agent**: LangChain agent with MCP tool integration
+- **Error Handling**: Intelligent error analysis and user guidance
+- **Retry Logic**: Limited iterations with early stopping
+
+### MCP Tools
+
+Available tools for SharePoint interaction:
+
+- **`get-auth-status`**: Verify authentication state
+- **`Lokka-Microsoft`**: Execute Microsoft Graph API calls for SharePoint
+- **`set-access-token`**: Update authentication tokens
+- **`add-graph-permission`**: Manage API permissions
+
+## 🐛 Error Handling
+
+### Intelligent Error Management
+
+The application implements a two-tier error handling system:
+
+1. **Primary Agent**: Attempts to fulfill user requests
+2. **Error Analysis Agent**: Analyzes failures and provides explanations
+
+### Common Error Scenarios
+
+- **SharePoint License Errors**: Explains when SharePoint Online licenses are missing
+- **Permission Errors**: Clarifies SharePoint access rights and next steps
+- **Service Unavailable**: Suggests connectivity checks or alternative SharePoint endpoints
+- **Data Not Found**: Explains why SharePoint data might not exist or be accessible
+
+### Error Response Format
+
+```
+What happened: Brief description of the error
+Why it happened: Root cause analysis
+What to do: Specific actionable steps
+```
+
+## 📊 Debug Information
+
+The application provides comprehensive debugging capabilities:
+
+- **Authentication Status**: Current token state and permissions
+- **Tool Execution**: Step-by-step tool calls and responses
+- **Error Analysis**: Detailed error context and resolution steps
+- **Session State**: Token refresh times and expiry information
+
+## 🔒 Security Considerations
+
+### Data Protection
+
+- **No Data Persistence**: SharePoint data not stored locally
+- **Read-Only Access**: No write, modify, or delete operations on SharePoint
+- **Secure Communication**: All API calls over HTTPS
+- **Token Security**: Automatic refresh and cleanup
+- **Permission Respect**: Only accesses SharePoint data user has rights to view
+
+
+
+## 🆘 Troubleshooting
+
 ### Common Issues
- 
-1. **"Tenant does not have a Microsoft 365 license"**: Your Azure AD tenant needs appropriate Microsoft 365 licensing
-2. **Authentication errors**: 
-   - For hardcoded auth: Ensure your client secret is the actual secret value, not the secret ID
-   - For interactive auth: Make sure redirect URI is set to `http://localhost:3000`
-3. **MCP connection issues**: Check that all config values are set correctly
-4. **Interactive auth browser issues**: Ensure your browser allows popups and can access `http://localhost:3000`
- 
-### Debug Mode
- 
-For debugging, you can run the command-line version which provides more detailed error messages.
- 
-## Key Libraries Used
 
-- **mcp_use**: Core library for MCP integration and conversational AI
-  - `MCPClient.from_config_file()`: Creates MCP client from JSON configuration file
-  - `MCPAgent`: Conversational agent that combines LLM with MCP tools for natural language interaction
-  - Automatic session management with `create_all_sessions(auto_initialize=True)`
-  - Built-in conversation memory with `memory_enabled=True`
-  - Tool initialization with `auto_initialize=True`
-  - Conversation history management with `clear_conversation_history()`
-- **Lokka**: MCP server for Microsoft Graph API integration
-- **Streamlit**: Web interface framework
-- **LangChain AWS**: Claude 3.5 Sonnet integration via AWS Bedrock
+1. **Authentication Failures**
+   - Verify Azure app registration configuration
+   - Check token validity and SharePoint scopes
+   - Ensure device code authentication is working
 
-## License
- 
- 
-## Contributing
- 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
- 
+2. **SharePoint Permission Errors**
+   - Verify Microsoft Graph API permissions for SharePoint
+   - Check admin consent status for SharePoint permissions
+   - Validate SharePoint Online licensing
+
+3. **Tool Execution Errors**
+   - Check MCP server connectivity
+   - Verify Lokka installation
+   - Review debug logs for API calls
+
+### Getting Help
+
+- Check the debug panel for detailed error information
+- Review authentication status in the sidebar
+- Examine intermediate steps for tool execution details
+- Contact support with specific error messages
+
+## 🔄 Updates & Maintenance
+
+### Token Management
+
+- Tokens automatically refresh before expiry
+- Manual refresh available via sidebar button
+- Session persistence across application restarts
+
+### Monitoring
+
+- Authentication events logged
+- Tool execution tracked
+- Error patterns monitored
+
+---
