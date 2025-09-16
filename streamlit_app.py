@@ -4,7 +4,9 @@ import logging
 from datetime import datetime, timedelta
 from src.mcp.client import MCPClientManager
 from src.ui.chat import ChatInterface
-from src.utils.config import init_session_state, get_graph_access_token_from_config
+from src.utils.config import init_session_state, get_graph_access_token_from_config, get_msal_settings
+from src.auth.delegated_token_provider import DelegatedTokenProvider
+from langchain_core.messages import HumanMessage, AIMessage
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -16,18 +18,34 @@ init_session_state()
 st.set_page_config(
     page_title="SharePoint RAG Chat",
     page_icon="💬",
-    layout="wide"
+    layout="centered"
 )
 
 if "mcp_client" not in st.session_state:
     st.session_state.mcp_client = MCPClientManager()
+if "token_provider" not in st.session_state:
+    msal_cfg = get_msal_settings()
+    if msal_cfg.get("client_id") and msal_cfg.get("authority"):
+        st.session_state.token_provider = DelegatedTokenProvider(
+            client_id=msal_cfg["client_id"],
+            authority=msal_cfg["authority"],
+            scopes=msal_cfg["scopes"],
+        )
 
 async def initialize_mcp():
     try:
         access_token = get_graph_access_token_from_config()
         if not access_token:
-            st.error("❌ MS_GRAPH_ACCESS_TOKEN not set. Add it to .streamlit/secrets.toml or environment.")
-            return None, None
+            # Fall back to delegated auth provider if configured
+            if st.session_state.get("token_provider"):
+                token, expires_on = st.session_state.token_provider.get_token()
+                if not token:
+                    return None, None
+                access_token = token
+                st.session_state.last_token_refresh = expires_on or datetime.now()
+            else:
+                st.error("❌ MS_GRAPH_ACCESS_TOKEN not set. Add it to .streamlit/secrets.toml or environment.")
+                return None, None
         tools, agent = await st.session_state.mcp_client.initialize(access_token)
         if tools and agent:
             st.session_state.agent = agent
@@ -48,8 +66,12 @@ def check_token_refresh():
 
 async def refresh_mcp():
     access_token = get_graph_access_token_from_config()
+    if not access_token and st.session_state.get("token_provider"):
+        token, expires_on = st.session_state.token_provider.force_refresh()
+        access_token = token
+        st.session_state.last_token_refresh = expires_on or datetime.now()
     if not access_token:
-        st.error("❌ MS_GRAPH_ACCESS_TOKEN not set.")
+        st.error("❌ No access token available.")
         st.session_state.initialized = False
         return
     success = await st.session_state.mcp_client.refresh_token(access_token)
@@ -80,6 +102,27 @@ with st.sidebar:
                     st.error("❌ Failed to initialize MCP connection")
     else:
         st.success("✅ MCP Connected")
+        with st.expander("Debug info", expanded=False):
+            st.write({
+                "last_token_refresh": st.session_state.last_token_refresh,
+            })
+            if "last_steps" in st.session_state:
+                st.subheader("Agent intermediate steps")
+                st.json([
+                    {
+                        "action": str(step[0]),
+                        "observation": str(step[1])[:2000],
+                    }
+                    for step in st.session_state.get("last_steps", [])
+                ])
+            try:
+                async def check_status(session):
+                    return await session.call_tool("get-auth-status", {})
+                status = asyncio.run(st.session_state.mcp_client.execute_with_session(check_status))
+                st.subheader("Lokka auth status")
+                st.json(status)
+            except Exception as e:
+                st.warning(f"Failed to query auth status: {e}")
         if st.button("🔄 Force Token Refresh"):
             asyncio.run(refresh_mcp())
         if st.button("🗑️ Clear Chat History"):
@@ -105,16 +148,36 @@ async def handle_chat():
                 with st.spinner("🤔 Thinking..."):
                     try:
                         try:
-                            async def execute_agent(session):
-                                response = await st.session_state.agent.ainvoke({
-                                    "input": prompt,
-                                    "chat_history": st.session_state.messages[:-1]
-                                })
-                                return response
-                            response = await st.session_state.mcp_client.execute_with_session(execute_agent)
-                            with st.spinner("📡 Streaming response..."):
-                                final_response = ChatInterface.stream_response(response["output"], message_placeholder)
+                            # Build chat history for agent
+                            chat_history = []
+                            for m in st.session_state.messages[:-1]:
+                                if m["role"] == "user":
+                                    chat_history.append(HumanMessage(content=m["content"]))
+                                elif m["role"] == "assistant":
+                                    chat_history.append(AIMessage(content=m["content"]))
+
+                            # Execute agent with stored session
+                            agent_result = await st.session_state.mcp_client.execute_agent(prompt, chat_history)
+                            final_text = agent_result.get("output", "")
+                            
+                            # Check if this is an error response by looking at intermediate steps
+                            # Error responses will have "Error Analysis" in their intermediate steps
+                            is_error_response = any(
+                                step[0] == "Error Analysis" if isinstance(step, tuple) else False
+                                for step in agent_result.get("intermediate_steps", [])
+                            )
+                            
+                            if is_error_response:
+                                with st.spinner("⚠️ Analyzing issue..."):
+                                    final_response = ChatInterface.stream_response(final_text, message_placeholder)
+                            else:
+                                with st.spinner("📡 Streaming response..."):
+                                    final_response = ChatInterface.stream_response(final_text, message_placeholder)
+                            
                             st.session_state.messages.append({"role": "assistant", "content": final_response})
+                            # Save intermediate steps for debugging panel
+                            if agent_result.get("intermediate_steps") is not None:
+                                st.session_state["last_steps"] = agent_result["intermediate_steps"]
                         except Exception as e:
                             error_msg = f"❌ Error processing request: {str(e)}"
                             logging.getLogger(__name__).error(error_msg, exc_info=True)
